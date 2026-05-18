@@ -41,7 +41,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 
 # ── Energy Governance Policies (Lobster Trap) ──
@@ -269,16 +270,13 @@ class GreenTuneAgent:
         if not key:
             raise ValueError("Set GOOGLE_API_KEY or pass api_key")
 
-        genai.configure(api_key=key)
-        self.model = genai.GenerativeModel(
-            model_name=model_name,
-            system_instruction=SYSTEM_PROMPT,
-        )
-        self.chat = self.model.start_chat(history=[])
+        self.client = genai.Client(api_key=key)
+        self.model_name = model_name
         self.policies = policies or DEFAULT_POLICIES
         self.data_dir = data_dir
         self.dashboard_url = dashboard_url
         self.dashboard_api_key = dashboard_api_key
+        self._history: list[types.Content] = []
 
         # Load historical data
         self.historical_runs = load_historical_runs(data_dir)
@@ -286,15 +284,26 @@ class GreenTuneAgent:
 
         # Send historical context as first message
         if self.historical_runs:
-            self.chat.send_message(
+            self.ask(
                 f"Here is the historical energy data from previous runs. "
                 f"Use this to inform your recommendations:\n\n{self.history_context}"
             )
 
     def ask(self, request: str) -> str:
         """Send a natural language request to the agent."""
-        response = self.chat.send_message(request)
-        return response.text
+        self._history.append(types.Content(role="user", parts=[types.Part(text=request)]))
+
+        response = self.client.models.generate_content(
+            model=self.model_name,
+            contents=self._history,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+            ),
+        )
+
+        text = response.text or ""
+        self._history.append(types.Content(role="model", parts=[types.Part(text=text)]))
+        return text
 
     def recommend_config(self, request: str) -> dict:
         """Get a structured config recommendation."""
