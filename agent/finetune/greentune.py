@@ -52,9 +52,8 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    TrainingArguments,
 )
-from trl import SFTTrainer
+from trl import SFTTrainer, SFTConfig
 
 from energy_callback import EnergyCallback
 
@@ -330,8 +329,8 @@ def build_lora_config(args: argparse.Namespace) -> LoraConfig:
     return config
 
 
-def build_training_args(args: argparse.Namespace) -> TrainingArguments:
-    return TrainingArguments(
+def build_training_args(args: argparse.Namespace) -> SFTConfig:
+    return SFTConfig(
         output_dir=args.output,
         num_train_epochs=args.epochs,
         max_steps=args.max_steps,
@@ -352,6 +351,7 @@ def build_training_args(args: argparse.Namespace) -> TrainingArguments:
         dataloader_num_workers=4,
         dataloader_pin_memory=True,
         remove_unused_columns=True,
+        max_seq_length=args.max_seq_length,
     )
 
 
@@ -472,7 +472,6 @@ def main():
         eval_dataset=val_ds,
         peft_config=lora_config,
         processing_class=tokenizer,
-        max_seq_length=args.max_seq_length,
         callbacks=[energy_cb],
     )
 
