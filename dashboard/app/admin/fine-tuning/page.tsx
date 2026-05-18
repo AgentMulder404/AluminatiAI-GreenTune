@@ -1840,6 +1840,144 @@ interface ChatMessage {
   config?: Record<string, unknown> | null;
 }
 
+interface SwarmEvent {
+  type: string;
+  agent?: string;
+  data?: string;
+  tool?: string;
+  args?: unknown;
+  result?: unknown;
+  number?: number;
+  total?: number;
+  config?: Record<string, unknown>;
+  text?: string;
+  iterations?: number;
+  success?: boolean;
+}
+
+const AGENT_COLORS: Record<string, { bg: string; border: string; text: string; dot: string }> = {
+  "Orchestrator":     { bg: "bg-blue-500/10",   border: "border-blue-500/30",   text: "text-blue-400",   dot: "bg-blue-500" },
+  "Config Optimizer": { bg: "bg-green-500/10",  border: "border-green-500/30",  text: "text-green-400",  dot: "bg-green-500" },
+  "Policy Guardian":  { bg: "bg-red-500/10",    border: "border-red-500/30",    text: "text-red-400",    dot: "bg-red-500" },
+  "Energy Analyst":   { bg: "bg-yellow-500/10", border: "border-yellow-500/30", text: "text-yellow-400", dot: "bg-yellow-500" },
+};
+
+function SwarmEventCard({ event }: { event: SwarmEvent }) {
+  const colors = AGENT_COLORS[event.agent ?? ""] ?? AGENT_COLORS["Orchestrator"];
+
+  if (event.type === "iteration") {
+    return (
+      <div className="flex items-center gap-2 py-2">
+        <div className="flex-1 h-px bg-neutral-700" />
+        <span className="text-neutral-500 text-xs font-medium px-2">
+          Iteration {event.number}/{event.total}
+        </span>
+        <div className="flex-1 h-px bg-neutral-700" />
+      </div>
+    );
+  }
+
+  if (event.type === "tool_call") {
+    return (
+      <div className={`${colors.bg} ${colors.border} border rounded-lg px-3 py-2 text-xs ml-6`}>
+        <div className="flex items-center gap-2">
+          <span className={`${colors.text} font-mono font-bold`}>{event.tool}()</span>
+          <span className="text-neutral-500">{event.agent}</span>
+        </div>
+        {event.args && typeof event.args === "object" && Object.keys(event.args as object).length > 0 ? (
+          <pre className="text-neutral-400 mt-1 overflow-x-auto">{JSON.stringify(event.args, null, 2)}</pre>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (event.type === "tool_result") {
+    return (
+      <div className="bg-neutral-800/50 border border-neutral-700/50 rounded-lg px-3 py-2 text-xs ml-6">
+        <span className="text-neutral-500 font-mono">{event.tool}</span>
+        <span className="text-neutral-600 mx-1">returned</span>
+        <pre className="text-neutral-400 mt-1 overflow-x-auto max-h-32 overflow-y-auto">
+          {JSON.stringify(event.result, null, 2)}
+        </pre>
+      </div>
+    );
+  }
+
+  if (event.type === "recommendation" && event.config) {
+    return (
+      <div className="bg-green-500/10 border-2 border-green-500/40 rounded-xl p-4">
+        <div className="text-green-400 font-bold text-sm mb-3">Swarm Recommendation</div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+          {Object.entries(event.config)
+            .filter(([k]) => k !== "reasoning")
+            .map(([k, v]) => (
+              <div key={k} className="bg-neutral-900 rounded-lg px-3 py-2">
+                <div className="text-neutral-500 text-xs">{k}</div>
+                <div className="text-white font-mono text-sm">{String(v)}</div>
+              </div>
+            ))}
+        </div>
+        {"reasoning" in event.config && event.config.reasoning ? (
+          <p className="text-neutral-300 text-sm mt-3 italic">{String(event.config.reasoning)}</p>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (event.type === "swarm_complete") {
+    return (
+      <div className={`border rounded-xl p-4 text-center ${event.success ? "border-green-500/40 bg-green-500/5" : "border-yellow-500/40 bg-yellow-500/5"}`}>
+        <div className={`font-bold text-sm ${event.success ? "text-green-400" : "text-yellow-400"}`}>
+          Swarm Complete — {event.iterations} iteration{(event.iterations ?? 0) > 1 ? "s" : ""}
+        </div>
+      </div>
+    );
+  }
+
+  if (event.type === "phase") {
+    return (
+      <div className="flex items-center gap-2 py-1">
+        <div className={`w-2 h-2 rounded-full ${colors.dot} animate-pulse`} />
+        <span className={`${colors.text} text-xs font-bold`}>{event.agent}</span>
+        <span className="text-neutral-400 text-xs">{event.data}</span>
+      </div>
+    );
+  }
+
+  if (event.type === "agent_response") {
+    return (
+      <div className={`${colors.bg} ${colors.border} border rounded-xl px-4 py-3`}>
+        <div className="flex items-center gap-2 mb-2">
+          <div className={`w-2 h-2 rounded-full ${colors.dot}`} />
+          <span className={`${colors.text} text-xs font-bold`}>{event.agent}</span>
+        </div>
+        <div className="text-neutral-200 text-sm whitespace-pre-wrap leading-relaxed max-h-64 overflow-y-auto">
+          {formatAgentResponse(event.data ?? "")}
+        </div>
+      </div>
+    );
+  }
+
+  if (event.type === "swarm_start") {
+    return (
+      <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl px-4 py-3 text-center">
+        <div className="text-blue-400 font-bold text-sm">Agent Swarm Activated</div>
+        <div className="text-neutral-400 text-xs mt-1">{event.data}</div>
+      </div>
+    );
+  }
+
+  if (event.type === "error") {
+    return (
+      <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3">
+        <div className="text-red-400 text-sm">{event.data}</div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
 function AgentTab({
   loading,
   error,
@@ -1849,9 +1987,13 @@ function AgentTab({
   error: string;
   callApi: (body: Record<string, unknown>) => Promise<Record<string, unknown> | null>;
 }) {
+  const [mode, setMode] = useState<"swarm" | "chat">("swarm");
+  const [swarmGoal, setSwarmGoal] = useState("Find the most energy-efficient QLoRA config for Qwen2.5-7B on 500 Hermes traces on AMD MI300X");
+  const [swarmEvents, setSwarmEvents] = useState<SwarmEvent[]>([]);
+  const [swarmRunning, setSwarmRunning] = useState(false);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const feedEndRef = useRef<HTMLDivElement>(null);
 
   const QUICK_PROMPTS = [
     "Optimize Qwen-7B for lowest J/token on MI300X",
@@ -1861,13 +2003,61 @@ function AgentTab({
   ];
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    feedEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [swarmEvents, messages]);
+
+  const launchSwarm = useCallback(async () => {
+    if (swarmRunning || !swarmGoal.trim()) return;
+    setSwarmRunning(true);
+    setSwarmEvents([]);
+
+    try {
+      const resp = await fetch("/api/admin/fine-tuning/swarm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ goal: swarmGoal, iterations: 3 }),
+      });
+
+      if (!resp.ok || !resp.body) {
+        setSwarmEvents([{ type: "error", data: `HTTP ${resp.status}` }]);
+        setSwarmRunning(false);
+        return;
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const event: SwarmEvent = JSON.parse(line.slice(6));
+              setSwarmEvents((prev) => [...prev, event]);
+            } catch { /* skip malformed */ }
+          }
+        }
+      }
+    } catch (e) {
+      setSwarmEvents((prev) => [
+        ...prev,
+        { type: "error", data: e instanceof Error ? e.message : "Connection failed" },
+      ]);
+    } finally {
+      setSwarmRunning(false);
+    }
+  }, [swarmGoal, swarmRunning]);
 
   const sendMessage = useCallback(
     async (text: string) => {
       if (!text.trim() || loading) return;
-
       const userMsg: ChatMessage = { role: "user", text };
       const updatedMessages = [...messages, userMsg];
       setMessages(updatedMessages);
@@ -1898,125 +2088,258 @@ function AgentTab({
     [messages, loading, callApi]
   );
 
+  const toolCallCount = swarmEvents.filter((e) => e.type === "tool_call").length;
+  const recommendation = swarmEvents.find((e) => e.type === "recommendation" && e.config);
+
   return (
     <div className="space-y-4">
-      {/* Agent header */}
+      {/* Header with mode toggle */}
       <div className="bg-gradient-to-r from-blue-950/50 to-neutral-950 border border-blue-500/20 rounded-xl p-5">
-        <div className="flex items-center gap-3 mb-2">
-          <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white text-lg font-black">
-            G
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white text-lg font-black">
+              G
+            </div>
+            <div>
+              <h3 className="text-white font-bold">GreenTune Agent Swarm</h3>
+              <p className="text-blue-400/80 text-xs">
+                Multi-agent optimization with Gemini 2.5 Flash
+              </p>
+            </div>
           </div>
-          <div>
-            <h3 className="text-white font-bold">GreenTune Agent</h3>
-            <p className="text-blue-400/80 text-xs">Powered by Gemini 2.5 Flash</p>
+          <div className="flex bg-neutral-800 rounded-lg p-0.5">
+            <button
+              onClick={() => setMode("swarm")}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                mode === "swarm" ? "bg-blue-600 text-white" : "text-neutral-400 hover:text-white"
+              }`}
+            >
+              Swarm
+            </button>
+            <button
+              onClick={() => setMode("chat")}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                mode === "chat" ? "bg-blue-600 text-white" : "text-neutral-400 hover:text-white"
+              }`}
+            >
+              Chat
+            </button>
           </div>
         </div>
         <p className="text-neutral-400 text-sm">
-          Ask me to optimize configs, compare energy efficiency, enforce carbon budgets,
-          or explain power draw patterns on MI300X.
+          {mode === "swarm"
+            ? "4 agents collaborate to find the optimal energy-efficient config: Orchestrator, Config Optimizer, Policy Guardian, Energy Analyst."
+            : "Ask questions about energy-efficient fine-tuning, power draw, or config optimization."}
         </p>
       </div>
 
-      {/* Quick prompts */}
-      {messages.length === 0 && (
-        <div className="grid grid-cols-2 gap-2">
-          {QUICK_PROMPTS.map((p) => (
-            <button
-              key={p}
-              onClick={() => sendMessage(p)}
-              className="text-left px-4 py-3 bg-neutral-900 border border-neutral-800 rounded-lg text-sm text-neutral-300 hover:border-blue-500/50 hover:text-white transition-colors"
-            >
-              {p}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Chat messages */}
-      <div className="space-y-3 max-h-[500px] overflow-y-auto">
-        {messages.map((msg, i) => (
-          <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-            <div
-              className={`max-w-[85%] rounded-xl px-4 py-3 text-sm ${
-                msg.role === "user"
-                  ? "bg-blue-600 text-white"
-                  : "bg-neutral-900 border border-neutral-800 text-neutral-200"
-              }`}
-            >
-              {msg.role === "assistant" ? (
-                <div className="space-y-3">
-                  <div className="whitespace-pre-wrap leading-relaxed">{formatAgentResponse(msg.text)}</div>
-                  {msg.config && (
-                    <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-3 mt-2">
-                      <div className="text-green-400 text-xs font-bold mb-2">Recommended Config</div>
-                      <div className="grid grid-cols-2 gap-1 text-xs">
-                        {Object.entries(msg.config)
-                          .filter(([k]) => k !== "reasoning")
-                          .map(([k, v]) => (
-                            <div key={k}>
-                              <span className="text-neutral-500">{k}:</span>{" "}
-                              <span className="text-white font-mono">{String(v)}</span>
-                            </div>
-                          ))}
-                      </div>
-                      {"reasoning" in msg.config && msg.config.reasoning ? (
-                        <p className="text-neutral-400 text-xs mt-2 italic">
-                          {String(msg.config.reasoning)}
-                        </p>
-                      ) : null}
-                    </div>
-                  )}
+      {mode === "swarm" ? (
+        <>
+          {/* Agent roster */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {[
+              { name: "Orchestrator", role: "Coordination" },
+              { name: "Config Optimizer", role: "Hyperparameters" },
+              { name: "Policy Guardian", role: "Lobster Trap" },
+              { name: "Energy Analyst", role: "Projections" },
+            ].map((a) => {
+              const c = AGENT_COLORS[a.name];
+              const isActive = swarmRunning && swarmEvents.some(
+                (e) => e.agent === a.name && !swarmEvents.find(
+                  (e2) => e2.type === "swarm_complete"
+                )
+              );
+              return (
+                <div key={a.name} className={`${c.bg} ${c.border} border rounded-lg px-3 py-2`}>
+                  <div className="flex items-center gap-2">
+                    <div className={`w-2 h-2 rounded-full ${c.dot} ${isActive ? "animate-pulse" : "opacity-50"}`} />
+                    <span className={`${c.text} text-xs font-bold`}>{a.name}</span>
+                  </div>
+                  <div className="text-neutral-500 text-xs mt-0.5">{a.role}</div>
                 </div>
+              );
+            })}
+          </div>
+
+          {/* Goal input + launch */}
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={swarmGoal}
+              onChange={(e) => setSwarmGoal(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  launchSwarm();
+                }
+              }}
+              placeholder="Optimization goal..."
+              className={`${INPUT_CLS} flex-1`}
+              disabled={swarmRunning}
+            />
+            <button
+              onClick={launchSwarm}
+              disabled={swarmRunning || !swarmGoal.trim()}
+              className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed shrink-0 flex items-center gap-2"
+            >
+              {swarmRunning ? (
+                <>
+                  <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  Running
+                </>
               ) : (
-                <span>{msg.text}</span>
+                "Launch Swarm"
+              )}
+            </button>
+          </div>
+
+          {/* Status bar */}
+          {swarmEvents.length > 0 && (
+            <div className="flex items-center gap-4 text-xs text-neutral-500 px-1">
+              <span>{swarmEvents.length} events</span>
+              <span>{toolCallCount} tool calls</span>
+              {recommendation && <span className="text-green-400 font-bold">Recommendation found</span>}
+              {swarmRunning && (
+                <span className="flex items-center gap-1">
+                  <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+                  Live
+                </span>
               )}
             </div>
+          )}
+
+          {/* Activity feed */}
+          <div className="space-y-2 max-h-[600px] overflow-y-auto">
+            {swarmEvents.map((event, i) => (
+              <SwarmEventCard key={i} event={event} />
+            ))}
+            {swarmRunning && swarmEvents.length > 0 && (
+              <div className="flex items-center gap-2 py-2">
+                <div className="w-3 h-3 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
+                <span className="text-neutral-400 text-xs">Agents working...</span>
+              </div>
+            )}
+            <div ref={feedEndRef} />
           </div>
-        ))}
-        {loading && (
-          <div className="flex justify-start">
-            <div className="bg-neutral-900 border border-neutral-800 rounded-xl px-4 py-3 text-sm text-neutral-400">
-              <span className="inline-flex gap-1">
-                <span className="animate-pulse">Thinking</span>
-                <span className="animate-bounce" style={{ animationDelay: "0.1s" }}>.</span>
-                <span className="animate-bounce" style={{ animationDelay: "0.2s" }}>.</span>
-                <span className="animate-bounce" style={{ animationDelay: "0.3s" }}>.</span>
-              </span>
+
+          {/* Empty state */}
+          {swarmEvents.length === 0 && !swarmRunning && (
+            <div className={CARD_CLS}>
+              <div className="text-center py-8">
+                <div className="text-4xl mb-3">{"{ }"}</div>
+                <p className="text-neutral-400 text-sm">
+                  Launch the swarm to see agents collaborate in real-time.
+                </p>
+                <p className="text-neutral-500 text-xs mt-2">
+                  The Orchestrator coordinates 3 specialist agents with Gemini function calling
+                  to find the optimal energy-efficient config.
+                </p>
+              </div>
             </div>
+          )}
+        </>
+      ) : (
+        <>
+          {/* Chat mode — existing single-agent chat */}
+          {messages.length === 0 && (
+            <div className="grid grid-cols-2 gap-2">
+              {QUICK_PROMPTS.map((p) => (
+                <button
+                  key={p}
+                  onClick={() => sendMessage(p)}
+                  className="text-left px-4 py-3 bg-neutral-900 border border-neutral-800 rounded-lg text-sm text-neutral-300 hover:border-blue-500/50 hover:text-white transition-colors"
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="space-y-3 max-h-[500px] overflow-y-auto">
+            {messages.map((msg, i) => (
+              <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div
+                  className={`max-w-[85%] rounded-xl px-4 py-3 text-sm ${
+                    msg.role === "user"
+                      ? "bg-blue-600 text-white"
+                      : "bg-neutral-900 border border-neutral-800 text-neutral-200"
+                  }`}
+                >
+                  {msg.role === "assistant" ? (
+                    <div className="space-y-3">
+                      <div className="whitespace-pre-wrap leading-relaxed">{formatAgentResponse(msg.text)}</div>
+                      {msg.config && (
+                        <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-3 mt-2">
+                          <div className="text-green-400 text-xs font-bold mb-2">Recommended Config</div>
+                          <div className="grid grid-cols-2 gap-1 text-xs">
+                            {Object.entries(msg.config)
+                              .filter(([k]) => k !== "reasoning")
+                              .map(([k, v]) => (
+                                <div key={k}>
+                                  <span className="text-neutral-500">{k}:</span>{" "}
+                                  <span className="text-white font-mono">{String(v)}</span>
+                                </div>
+                              ))}
+                          </div>
+                          {"reasoning" in msg.config && msg.config.reasoning ? (
+                            <p className="text-neutral-400 text-xs mt-2 italic">
+                              {String(msg.config.reasoning)}
+                            </p>
+                          ) : null}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <span>{msg.text}</span>
+                  )}
+                </div>
+              </div>
+            ))}
+            {loading && (
+              <div className="flex justify-start">
+                <div className="bg-neutral-900 border border-neutral-800 rounded-xl px-4 py-3 text-sm text-neutral-400">
+                  <span className="inline-flex gap-1">
+                    <span className="animate-pulse">Thinking</span>
+                    <span className="animate-bounce" style={{ animationDelay: "0.1s" }}>.</span>
+                    <span className="animate-bounce" style={{ animationDelay: "0.2s" }}>.</span>
+                    <span className="animate-bounce" style={{ animationDelay: "0.3s" }}>.</span>
+                  </span>
+                </div>
+              </div>
+            )}
+            <div ref={feedEndRef} />
           </div>
-        )}
-        <div ref={messagesEndRef} />
-      </div>
 
-      {/* Input */}
-      <div className="flex gap-2">
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              sendMessage(input);
-            }
-          }}
-          placeholder="Ask the agent about energy-efficient fine-tuning..."
-          className={`${INPUT_CLS} flex-1`}
-          disabled={loading}
-        />
-        <button
-          onClick={() => sendMessage(input)}
-          disabled={loading || !input.trim()}
-          className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
-        >
-          Send
-        </button>
-      </div>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  sendMessage(input);
+                }
+              }}
+              placeholder="Ask the agent about energy-efficient fine-tuning..."
+              className={`${INPUT_CLS} flex-1`}
+              disabled={loading}
+            />
+            <button
+              onClick={() => sendMessage(input)}
+              disabled={loading || !input.trim()}
+              className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+            >
+              Send
+            </button>
+          </div>
 
-      {error && (
-        <div className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
-          {error}
-        </div>
+          {error && (
+            <div className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
+              {error}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
