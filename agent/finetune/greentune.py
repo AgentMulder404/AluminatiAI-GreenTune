@@ -351,7 +351,7 @@ def build_training_args(args: argparse.Namespace) -> SFTConfig:
         dataloader_num_workers=4,
         dataloader_pin_memory=True,
         remove_unused_columns=True,
-        max_seq_length=args.max_seq_length,
+        max_length=args.max_seq_length,
     )
 
 
