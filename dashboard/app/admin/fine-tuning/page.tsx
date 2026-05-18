@@ -593,10 +593,9 @@ function RunMonitorTab({ runs }: { runs: TrainingRun[] }) {
     return (
       <div className={CARD_CLS}>
         <p className="text-neutral-400 text-center py-12">
-          No training runs loaded. Paste your <code>energy_metrics.json</code>{" "}
-          below to visualize a run.
+          No training runs yet. Start a fine-tuning job with the GreenTune Agent
+          or run <code>greentune.py --api-url</code> to stream live data.
         </p>
-        <ImportPanel runs={runs} onImport={() => {}} />
       </div>
     );
   }
@@ -2173,154 +2172,6 @@ function PoliciesTab() {
   );
 }
 
-// ── Import Panel ──
-
-function ImportPanel({
-  runs,
-  onImport,
-}: {
-  runs: TrainingRun[];
-  onImport: (run: TrainingRun) => void;
-}) {
-  const [jsonInput, setJsonInput] = useState("");
-  const [importName, setImportName] = useState("");
-  const [importType, setImportType] = useState<
-    "energy_metrics" | "run_config" | "power_samples" | "eval_results"
-  >("energy_metrics");
-  const [error, setError] = useState("");
-
-  const nameSuggestions = useMemo(() => [
-    "Hermes-only (bs=2)",
-    "Blended v1",
-    "LoRA r=8 test",
-    "Large batch (bs=4)",
-  ], []);
-  const { onKeyDown: onNameTab } = useTabFill(importName, setImportName, nameSuggestions);
-  const [pendingRun, setPendingRun] = useState<Partial<TrainingRun>>({
-    id: uid(),
-    name: "",
-    metrics: null,
-    power: [],
-    config: null,
-    evals: [],
-  });
-
-  const handleAddFile = () => {
-    setError("");
-    try {
-      const parsed = JSON.parse(jsonInput);
-      const updated = { ...pendingRun };
-
-      switch (importType) {
-        case "energy_metrics":
-          updated.metrics = parsed as EnergyMetrics;
-          break;
-        case "run_config":
-          updated.config = parsed as RunConfig;
-          break;
-        case "power_samples":
-          updated.power = parsed as PowerSample[];
-          break;
-        case "eval_results":
-          updated.evals = parsed as EvalResult[];
-          break;
-      }
-
-      setPendingRun(updated);
-      setJsonInput("");
-    } catch {
-      setError("Invalid JSON");
-    }
-  };
-
-  const handleFinishImport = () => {
-    if (!importName.trim()) {
-      setError("Enter a run name");
-      return;
-    }
-    const run: TrainingRun = {
-      id: pendingRun.id || uid(),
-      name: importName.trim(),
-      metrics: pendingRun.metrics || null,
-      power: pendingRun.power || [],
-      config: pendingRun.config || null,
-      evals: pendingRun.evals || [],
-    };
-    onImport(run);
-    setPendingRun({ id: uid(), name: "", metrics: null, power: [], config: null, evals: [] });
-    setImportName("");
-  };
-
-  const fileTypes = [
-    { value: "energy_metrics", label: "energy_metrics.json", loaded: !!pendingRun.metrics },
-    { value: "run_config", label: "run_config.json", loaded: !!pendingRun.config },
-    { value: "power_samples", label: "power_samples.json", loaded: (pendingRun.power?.length ?? 0) > 0 },
-    { value: "eval_results", label: "eval_results.json", loaded: (pendingRun.evals?.length ?? 0) > 0 },
-  ] as const;
-
-  return (
-    <div className={`${CARD_CLS} mt-6`}>
-      <h3 className="text-sm font-medium text-white mb-3">
-        Import Training Run
-      </h3>
-      <div className="space-y-3">
-        <div className="relative">
-          <input
-            type="text"
-            value={importName}
-            onChange={(e) => setImportName(e.target.value)}
-            onKeyDown={onNameTab}
-            placeholder="Run name (e.g. 'Hermes-only' or 'Blended v1')"
-            className={INPUT_CLS}
-          />
-          <TabHint visible={!importName} />
-        </div>
-        <div className="flex gap-2 flex-wrap">
-          {fileTypes.map((ft) => (
-            <button
-              key={ft.value}
-              onClick={() => setImportType(ft.value)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                importType === ft.value
-                  ? "bg-green-600 text-white"
-                  : ft.loaded
-                  ? "bg-green-500/20 text-green-400"
-                  : "bg-neutral-800 text-neutral-400 hover:text-white"
-              }`}
-            >
-              {ft.loaded ? "✓ " : ""}
-              {ft.label}
-            </button>
-          ))}
-        </div>
-        <textarea
-          value={jsonInput}
-          onChange={(e) => setJsonInput(e.target.value)}
-          placeholder={`Paste ${importType}.json contents here...`}
-          className={`${INPUT_CLS} h-32 resize-none font-mono text-xs`}
-        />
-        {error && <p className="text-red-400 text-xs">{error}</p>}
-        <div className="flex gap-2">
-          <button
-            onClick={handleAddFile}
-            disabled={!jsonInput.trim()}
-            className="px-4 py-2 bg-neutral-700 text-white rounded-lg text-sm font-medium hover:bg-neutral-600 disabled:opacity-50"
-          >
-            Add File
-          </button>
-          <button
-            onClick={handleFinishImport}
-            disabled={!importName.trim() || !pendingRun.metrics}
-            className="px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-500 disabled:opacity-50"
-          >
-            Import Run
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ── Main Page ──
 
 export default function FineTuningPage() {
@@ -2338,14 +2189,6 @@ export default function FineTuningPage() {
     const filtered = storedRuns.filter((r) => !liveIds.has(r.id));
     return [...liveRuns, ...filtered];
   }, [storedRuns, liveRuns]);
-
-  const handleImport = useCallback(
-    (run: TrainingRun) => {
-      const updated = [...storedRuns, run];
-      saveRuns(updated);
-    },
-    [storedRuns, saveRuns]
-  );
 
   const handleDeleteRun = useCallback(
     (id: string) => {
@@ -2413,9 +2256,6 @@ export default function FineTuningPage() {
           />
         )}
         {tab === "roi" && <ROICalculatorTab />}
-
-        {/* Import Panel (always visible at bottom) */}
-        <ImportPanel runs={storedRuns} onImport={handleImport} />
 
         {/* Run Management */}
         {allRuns.length > 0 && (
