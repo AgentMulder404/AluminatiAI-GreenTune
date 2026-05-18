@@ -21,7 +21,7 @@ import {
 
 // ── Types ──
 
-type TabId = "overview" | "monitor" | "leaderboard" | "playground" | "roi";
+type TabId = "overview" | "agent" | "monitor" | "leaderboard" | "policies" | "playground" | "roi";
 
 interface EnergySummary {
   training_duration_s: number;
@@ -105,10 +105,12 @@ interface TrainingRun {
 
 // ── Constants ──
 
-const TABS: { id: TabId; label: string }[] = [
+const TABS: { id: TabId; label: string; accent?: string }[] = [
   { id: "overview", label: "Overview" },
+  { id: "agent", label: "Agent", accent: "text-blue-400" },
   { id: "monitor", label: "Run Monitor" },
   { id: "leaderboard", label: "Leaderboard" },
+  { id: "policies", label: "Policies" },
   { id: "playground", label: "Playground" },
   { id: "roi", label: "ROI Calculator" },
 ];
@@ -1831,6 +1833,346 @@ function OverviewTab({ runs }: { runs: TrainingRun[] }) {
   );
 }
 
+// ── Tab: Agent Chat ──
+
+interface ChatMessage {
+  role: "user" | "assistant";
+  text: string;
+  config?: Record<string, unknown> | null;
+}
+
+function AgentTab({
+  loading,
+  error,
+  callApi,
+}: {
+  loading: boolean;
+  error: string;
+  callApi: (body: Record<string, unknown>) => Promise<Record<string, unknown> | null>;
+}) {
+  const [input, setInput] = useState("");
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const QUICK_PROMPTS = [
+    "Optimize Qwen-7B for lowest J/token on MI300X",
+    "Compare batch sizes 1 vs 2 vs 4 for energy efficiency",
+    "Recommend a config under 50g CO2 for 500 samples",
+    "Why does MI300X waste energy with small batches?",
+  ];
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  const sendMessage = useCallback(
+    async (text: string) => {
+      if (!text.trim() || loading) return;
+
+      const userMsg: ChatMessage = { role: "user", text };
+      const updatedMessages = [...messages, userMsg];
+      setMessages(updatedMessages);
+      setInput("");
+
+      const history = updatedMessages.slice(0, -1).map((m) => ({
+        role: m.role === "user" ? "user" : "model",
+        text: m.text,
+      }));
+
+      const result = await callApi({
+        action: "agent_chat",
+        message: text,
+        history,
+      });
+
+      if (result) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            text: (result.response as string) || "No response",
+            config: result.config as Record<string, unknown> | null,
+          },
+        ]);
+      }
+    },
+    [messages, loading, callApi]
+  );
+
+  return (
+    <div className="space-y-4">
+      {/* Agent header */}
+      <div className="bg-gradient-to-r from-blue-950/50 to-neutral-950 border border-blue-500/20 rounded-xl p-5">
+        <div className="flex items-center gap-3 mb-2">
+          <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white text-lg font-black">
+            G
+          </div>
+          <div>
+            <h3 className="text-white font-bold">GreenTune Agent</h3>
+            <p className="text-blue-400/80 text-xs">Powered by Gemini 2.5 Flash</p>
+          </div>
+        </div>
+        <p className="text-neutral-400 text-sm">
+          Ask me to optimize configs, compare energy efficiency, enforce carbon budgets,
+          or explain power draw patterns on MI300X.
+        </p>
+      </div>
+
+      {/* Quick prompts */}
+      {messages.length === 0 && (
+        <div className="grid grid-cols-2 gap-2">
+          {QUICK_PROMPTS.map((p) => (
+            <button
+              key={p}
+              onClick={() => sendMessage(p)}
+              className="text-left px-4 py-3 bg-neutral-900 border border-neutral-800 rounded-lg text-sm text-neutral-300 hover:border-blue-500/50 hover:text-white transition-colors"
+            >
+              {p}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Chat messages */}
+      <div className="space-y-3 max-h-[500px] overflow-y-auto">
+        {messages.map((msg, i) => (
+          <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+            <div
+              className={`max-w-[85%] rounded-xl px-4 py-3 text-sm ${
+                msg.role === "user"
+                  ? "bg-blue-600 text-white"
+                  : "bg-neutral-900 border border-neutral-800 text-neutral-200"
+              }`}
+            >
+              {msg.role === "assistant" ? (
+                <div className="space-y-3">
+                  <div className="whitespace-pre-wrap leading-relaxed">{formatAgentResponse(msg.text)}</div>
+                  {msg.config && (
+                    <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-3 mt-2">
+                      <div className="text-green-400 text-xs font-bold mb-2">Recommended Config</div>
+                      <div className="grid grid-cols-2 gap-1 text-xs">
+                        {Object.entries(msg.config)
+                          .filter(([k]) => k !== "reasoning")
+                          .map(([k, v]) => (
+                            <div key={k}>
+                              <span className="text-neutral-500">{k}:</span>{" "}
+                              <span className="text-white font-mono">{String(v)}</span>
+                            </div>
+                          ))}
+                      </div>
+                      {"reasoning" in msg.config && msg.config.reasoning ? (
+                        <p className="text-neutral-400 text-xs mt-2 italic">
+                          {String(msg.config.reasoning)}
+                        </p>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <span>{msg.text}</span>
+              )}
+            </div>
+          </div>
+        ))}
+        {loading && (
+          <div className="flex justify-start">
+            <div className="bg-neutral-900 border border-neutral-800 rounded-xl px-4 py-3 text-sm text-neutral-400">
+              <span className="inline-flex gap-1">
+                <span className="animate-pulse">Thinking</span>
+                <span className="animate-bounce" style={{ animationDelay: "0.1s" }}>.</span>
+                <span className="animate-bounce" style={{ animationDelay: "0.2s" }}>.</span>
+                <span className="animate-bounce" style={{ animationDelay: "0.3s" }}>.</span>
+              </span>
+            </div>
+          </div>
+        )}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Input */}
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              sendMessage(input);
+            }
+          }}
+          placeholder="Ask the agent about energy-efficient fine-tuning..."
+          className={`${INPUT_CLS} flex-1`}
+          disabled={loading}
+        />
+        <button
+          onClick={() => sendMessage(input)}
+          disabled={loading || !input.trim()}
+          className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+        >
+          Send
+        </button>
+      </div>
+
+      {error && (
+        <div className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatAgentResponse(text: string): string {
+  return text.replace(/```json\s*\{[\s\S]*?\}\s*```/g, "").trim();
+}
+
+// ── Tab: Policies (Lobster Trap) ──
+
+const LOBSTER_POLICIES = [
+  {
+    name: "carbon_budget",
+    label: "Carbon Budget",
+    description: "Reject jobs projected to exceed CO2 limit",
+    limit: "50g CO2",
+    icon: "CO2",
+    color: "emerald",
+    detail: "EU AI Act Article 40 requires energy/carbon reporting. This prevents any single run from exceeding a team's daily allocation.",
+    baseline: "9.46g",
+    headroom: "81%",
+  },
+  {
+    name: "energy_cap",
+    label: "Energy Cap",
+    description: "No single run may exceed energy limit",
+    limit: "1 kWh",
+    icon: "kWh",
+    color: "yellow",
+    detail: "At MI300X's 750W TDP, 1 kWh = 80 minutes of full-power training. Prevents runaway jobs on shared clusters.",
+    baseline: "0.024 kWh",
+    headroom: "97%",
+  },
+  {
+    name: "efficiency_floor",
+    label: "Efficiency Floor",
+    description: "J/token must not exceed threshold",
+    limit: "0.8 J/tok",
+    icon: "J/t",
+    color: "blue",
+    detail: "Best known config achieves 0.355 J/tok. This rejects anything above 2x — it's almost certainly misconfigured.",
+    baseline: "0.355 J/tok",
+    headroom: "56%",
+  },
+  {
+    name: "cost_guard",
+    label: "Cost Guard",
+    description: "Training energy cost must stay under limit",
+    limit: "$1.00",
+    icon: "$",
+    color: "purple",
+    detail: "Direct budget control. At $0.10/kWh, $1 = 10 kWh = enough for ~80 QLoRA runs.",
+    baseline: "$0.0024",
+    headroom: "99%",
+  },
+];
+
+function PoliciesTab() {
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="bg-gradient-to-r from-red-950/30 to-neutral-950 border border-red-500/20 rounded-xl p-5">
+        <div className="flex items-center gap-3 mb-2">
+          <div className="w-10 h-10 rounded-xl bg-red-600/20 border border-red-500/30 flex items-center justify-center">
+            <span className="text-red-400 text-sm font-black">LT</span>
+          </div>
+          <div>
+            <h3 className="text-white font-bold">Lobster Trap — Energy Governance</h3>
+            <p className="text-red-400/80 text-xs">Policies enforced before training starts</p>
+          </div>
+        </div>
+        <p className="text-neutral-400 text-sm">
+          Enterprise energy policies that reject wasteful jobs before they burn a single Joule.
+          When a proposed config violates a policy, the agent explains why and suggests a compliant alternative.
+        </p>
+      </div>
+
+      {/* Policy cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {LOBSTER_POLICIES.map((p) => {
+          const borderColor =
+            p.color === "emerald" ? "border-emerald-500/30" :
+            p.color === "yellow" ? "border-yellow-500/30" :
+            p.color === "blue" ? "border-blue-500/30" :
+            "border-purple-500/30";
+          const textColor =
+            p.color === "emerald" ? "text-emerald-400" :
+            p.color === "yellow" ? "text-yellow-400" :
+            p.color === "blue" ? "text-blue-400" :
+            "text-purple-400";
+          const bgColor =
+            p.color === "emerald" ? "bg-emerald-500/10" :
+            p.color === "yellow" ? "bg-yellow-500/10" :
+            p.color === "blue" ? "bg-blue-500/10" :
+            "bg-purple-500/10";
+
+          return (
+            <div key={p.name} className={`bg-neutral-900 border ${borderColor} rounded-xl p-5`}>
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <div className={`w-8 h-8 rounded-lg ${bgColor} flex items-center justify-center`}>
+                    <span className={`${textColor} text-xs font-black`}>{p.icon}</span>
+                  </div>
+                  <div>
+                    <div className="text-white text-sm font-bold">{p.label}</div>
+                    <div className="text-neutral-500 text-xs">{p.description}</div>
+                  </div>
+                </div>
+                <div className={`px-2 py-1 rounded-md ${bgColor} ${textColor} text-xs font-bold`}>
+                  {p.limit}
+                </div>
+              </div>
+
+              <p className="text-neutral-400 text-xs mb-3 leading-relaxed">{p.detail}</p>
+
+              <div className="flex items-center justify-between text-xs">
+                <div>
+                  <span className="text-neutral-500">Baseline run: </span>
+                  <span className="text-neutral-300 font-mono">{p.baseline}</span>
+                </div>
+                <div>
+                  <span className="text-neutral-500">Headroom: </span>
+                  <span className="text-green-400 font-bold">{p.headroom}</span>
+                </div>
+              </div>
+
+              {/* Visual bar */}
+              <div className="mt-2 h-1.5 bg-neutral-800 rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full ${
+                    p.color === "emerald" ? "bg-emerald-500" :
+                    p.color === "yellow" ? "bg-yellow-500" :
+                    p.color === "blue" ? "bg-blue-500" :
+                    "bg-purple-500"
+                  }`}
+                  style={{ width: `${100 - parseInt(p.headroom)}%` }}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Compliance note */}
+      <div className="bg-neutral-900/50 border border-neutral-800 rounded-xl p-4 text-xs text-neutral-500">
+        <span className="text-neutral-400 font-medium">Compliance:</span> Energy policies
+        support EU AI Act Article 40 (energy reporting for high-risk AI), SEC climate
+        disclosure requirements, and internal carbon accounting. All policy checks run
+        pre-training — no energy is wasted on rejected jobs.
+      </div>
+    </div>
+  );
+}
+
 // ── Import Panel ──
 
 function ImportPanel({
@@ -2016,14 +2358,21 @@ export default function FineTuningPage() {
     <div className="bg-neutral-950 text-neutral-100 p-6 min-h-screen">
       <div className="max-w-6xl mx-auto">
         <div className="flex items-center justify-between mb-1">
-          <h1 className="text-2xl font-bold text-white">
-            GreenTune Fine-Tuning
-          </h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold text-white">
+              GreenTune Agent
+            </h1>
+            <span className="px-2 py-0.5 bg-blue-500/20 text-blue-400 text-[10px] font-bold rounded-full uppercase tracking-wider">
+              Gemini
+            </span>
+            <span className="px-2 py-0.5 bg-red-500/20 text-red-400 text-[10px] font-bold rounded-full uppercase tracking-wider">
+              MI300X
+            </span>
+          </div>
           <LiveIndicator connected={connected} />
         </div>
         <p className="text-neutral-400 text-sm mb-6">
-          Energy-efficient QLoRA fine-tuning on AMD MI300X with real-time power
-          monitoring
+          Autonomous Energy Intelligence for LLM fine-tuning — powered by Gemini on AMD MI300X
         </p>
 
         {/* Tab Bar */}
@@ -2034,7 +2383,11 @@ export default function FineTuningPage() {
               onClick={() => setTab(t.id)}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                 tab === t.id
-                  ? "bg-green-600 text-white"
+                  ? t.id === "agent"
+                    ? "bg-blue-600 text-white"
+                    : t.id === "policies"
+                    ? "bg-red-600 text-white"
+                    : "bg-green-600 text-white"
                   : "bg-neutral-800 text-neutral-400 hover:text-white"
               }`}
             >
@@ -2045,8 +2398,12 @@ export default function FineTuningPage() {
 
         {/* Tab Content */}
         {tab === "overview" && <OverviewTab runs={allRuns} />}
+        {tab === "agent" && (
+          <AgentTab loading={loading} error={error} callApi={callApi} />
+        )}
         {tab === "monitor" && <RunMonitorTab runs={allRuns} />}
         {tab === "leaderboard" && <LeaderboardTab runs={allRuns} />}
+        {tab === "policies" && <PoliciesTab />}
         {tab === "playground" && (
           <PlaygroundTab
             runs={allRuns}
