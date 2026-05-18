@@ -83,6 +83,11 @@ class EnergyCallback(TrainerCallback):
         self.energy_price = energy_price_usd_kwh
         self.output_dir = output_dir
         self.tokens_per_sample = tokens_per_sample
+        if api_url:
+            api_url = api_url.rstrip("/")
+            suffix = "/api/admin/fine-tuning/ingest"
+            if api_url.endswith(suffix):
+                api_url = api_url[: -len(suffix)]
         self.api_url = api_url
         self.api_key = api_key
         self.run_name = run_name
