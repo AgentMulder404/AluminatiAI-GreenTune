@@ -326,6 +326,45 @@ Use tools to list historical runs, project energy, compare configs.
 Always provide absolute numbers, relative comparisons to baseline, and actionable suggestions."""
 
 
+_last_call_ts: float = 0.0
+_MIN_INTERVAL = 2.0  # paid tier: 1000 RPM, just a small safety gap
+
+
+def _call_with_retry(client, **kwargs):
+    """Call generate_content with rate limiting and retry on 429."""
+    global _last_call_ts
+
+    # Pre-throttle: ensure minimum gap between requests
+    elapsed = time.time() - _last_call_ts
+    if elapsed < _MIN_INTERVAL:
+        gap = _MIN_INTERVAL - elapsed
+        try:
+            from rich.console import Console
+            Console().print(f"[dim]Throttling — waiting {gap:.0f}s for rate limit[/dim]")
+        except ImportError:
+            print(f"Throttling — waiting {gap:.0f}s for rate limit")
+        time.sleep(gap)
+
+    max_retries = 8
+    for attempt in range(max_retries):
+        try:
+            _last_call_ts = time.time()
+            return client.models.generate_content(**kwargs)
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                wait = 30 * (attempt + 1)
+                try:
+                    from rich.console import Console
+                    Console().print(f"[dim]Rate limited — waiting {wait}s (attempt {attempt + 1}/{max_retries})[/dim]")
+                except ImportError:
+                    print(f"Rate limited — waiting {wait}s (attempt {attempt + 1}/{max_retries})")
+                time.sleep(wait)
+            else:
+                raise
+    raise RuntimeError("Max retries exceeded on rate limit")
+
+
 class SwarmAgent:
     """A single Gemini-powered agent with function calling."""
 
@@ -359,7 +398,8 @@ class SwarmAgent:
         )
 
         for _ in range(max_rounds):
-            resp = self.client.models.generate_content(
+            resp = _call_with_retry(
+                self.client,
                 model="gemini-2.5-flash",
                 contents=self.history,
                 config=types.GenerateContentConfig(
@@ -428,21 +468,19 @@ class GreenTuneSwarm:
         self.on_event = on_event
         self.trace: list = []
 
-        shared_tools = [
-            "list_historical_runs", "project_energy",
-            "compare_configs", "get_hardware_info",
-        ]
+        # Tools are run locally in Python, not via Gemini function calling,
+        # to stay within free-tier rate limits (5 req/min).
         self.optimizer = SwarmAgent(
             "Config Optimizer", "Hyperparameter optimization",
-            OPTIMIZER_PROMPT, shared_tools, self.client,
+            OPTIMIZER_PROMPT, [], self.client,
         )
         self.guardian = SwarmAgent(
             "Policy Guardian", "Energy policy enforcement",
-            GUARDIAN_PROMPT, ["check_policies"], self.client,
+            GUARDIAN_PROMPT, [], self.client,
         )
         self.analyst = SwarmAgent(
             "Energy Analyst", "Energy analysis & projection",
-            ANALYST_PROMPT, shared_tools, self.client,
+            ANALYST_PROMPT, [], self.client,
         )
         self.agents = {
             "optimizer": self.optimizer,
@@ -471,14 +509,30 @@ class GreenTuneSwarm:
             except ImportError:
                 print(f"[{agent}] {event_type}: {data[:200]}")
 
+    @staticmethod
+    def _extract_configs(text: str) -> list:
+        """Extract config JSON blocks from agent text."""
+        configs = []
+        for m in re.finditer(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text):
+            try:
+                c = json.loads(m.group(1))
+                if "batch_size" in c:
+                    configs.append(c)
+            except (json.JSONDecodeError, KeyError):
+                continue
+        return configs
+
     def optimize(self, goal: str, max_iterations: int = 3) -> dict:
         self._emit("swarm_start", "Orchestrator", goal)
 
-        # Phase 1 — Analyst reviews history
+        # Phase 1 — Analyst reviews history (1 API call, uses tools locally)
         self._emit("phase", "Energy Analyst", "Analyzing historical training runs")
+        history_data = list_historical_runs()
+        hw_info = get_hardware_info()
         history_analysis = self.analyst.act(
-            "List all historical training runs and analyze their energy efficiency. "
-            "Identify the most and least efficient configs and explain why."
+            f"Here is the historical training data:\n{json.dumps(history_data, indent=2)}\n\n"
+            f"Hardware: {json.dumps(hw_info)}\n\n"
+            "Analyze energy efficiency. Which config is best/worst and why?"
         )
         self._emit("analysis", "Energy Analyst", history_analysis[:500])
 
@@ -487,39 +541,95 @@ class GreenTuneSwarm:
         for iteration in range(1, max_iterations + 1):
             self._emit("iteration_start", "Orchestrator", f"Iteration {iteration}/{max_iterations}")
 
-            # Phase 2 — Optimizer proposes configs
+            # Phase 2 — Optimizer proposes configs (1 API call, text only)
             self._emit("phase", "Config Optimizer", "Proposing training configurations")
             context = f"Goal: {goal}\nHistorical analysis:\n{history_analysis}\n"
             if best_result:
                 context += f"\nBest so far: {json.dumps(best_result, indent=2)}\nTry to beat it."
-            proposals = self.optimizer.act(
-                f"{context}\n\nPropose 3 QLoRA configs (conservative, balanced, aggressive). "
-                "Use project_energy on each, then compare_configs to rank them."
+            proposals_text = self.optimizer.act(
+                f"{context}\n\nPropose 3 QLoRA configs (conservative, balanced, aggressive) "
+                "for Qwen2.5-7B on 500 Hermes traces.\n"
+                "For each, output a JSON block with: batch_size, gradient_accumulation_steps, "
+                "num_epochs, lora_rank, max_samples. Keep max_samples=500."
             )
-            self._emit("proposals", "Config Optimizer", proposals[:500])
+            self._emit("proposals", "Config Optimizer", proposals_text[:500])
 
-            # Phase 3 — Guardian checks policies
+            # Phase 3 — Run projections and policy checks locally (0 API calls)
+            configs = self._extract_configs(proposals_text)
+            if not configs:
+                configs = [
+                    {"batch_size": 4, "gradient_accumulation_steps": 2, "num_epochs": 1, "lora_rank": 16, "max_samples": 500},
+                    {"batch_size": 8, "gradient_accumulation_steps": 1, "num_epochs": 1, "lora_rank": 16, "max_samples": 500},
+                    {"batch_size": 2, "gradient_accumulation_steps": 4, "num_epochs": 1, "lora_rank": 8, "max_samples": 500},
+                ]
+                self._emit("phase", "Orchestrator", "No JSON configs extracted — using defaults")
+
+            projections = []
+            for cfg in configs:
+                proj = project_energy(
+                    batch_size=int(cfg.get("batch_size", 2)),
+                    gradient_accumulation_steps=int(cfg.get("gradient_accumulation_steps", 4)),
+                    num_epochs=int(cfg.get("num_epochs", 1)),
+                    lora_rank=int(cfg.get("lora_rank", 16)),
+                    max_samples=int(cfg.get("max_samples", 500)),
+                )
+                self._emit("tool_call", "Config Optimizer",
+                           f"project_energy(bs={cfg.get('batch_size')}, ga={cfg.get('gradient_accumulation_steps')}, "
+                           f"rank={cfg.get('lora_rank')})")
+                self._emit("tool_result", "Config Optimizer",
+                           f"→ {proj['projection']['joules_per_token']} J/tok, "
+                           f"{proj['projection']['co2_grams']}g CO2, "
+                           f"{proj['projection']['duration_human']}")
+                projections.append(proj)
+
+            # Policy checks
             self._emit("phase", "Policy Guardian", "Checking Lobster Trap compliance")
-            policy_result = self.guardian.act(
-                f"Check these proposed configs against Lobster Trap policies:\n\n{proposals}\n\n"
-                "Use check_policies for each config. Report pass/fail with specifics."
-            )
-            self._emit("policy_check", "Policy Guardian", policy_result[:500])
+            policy_results = []
+            for proj in projections:
+                p = proj["projection"]
+                check = check_policies(
+                    total_joules=p["total_joules"],
+                    joules_per_token=p["joules_per_token"],
+                    co2_grams=p["co2_grams"],
+                    cost_usd=p["cost_usd"],
+                )
+                policy_results.append({"config": proj["config"], "projection": p, "policies": check})
+                status = "PASS" if check["all_passed"] else "FAIL"
+                self._emit("tool_result", "Policy Guardian",
+                           f"bs={proj['config']['batch_size']} → {status} "
+                           f"({sum(1 for r in check['policies'] if r['passed'])}/4 policies)")
 
-            # Phase 4 — Analyst evaluates
+            # Compare
+            comparison = compare_configs(projections)
+            self._emit("tool_result", "Orchestrator",
+                       f"Best: bs={comparison['best']['config']['batch_size']}, "
+                       f"savings: {comparison['energy_savings_pct']}%")
+
+            # Phase 4 — Guardian synthesizes policy report (1 API call)
+            self._emit("phase", "Policy Guardian", "Synthesizing policy report")
+            guardian_summary = self.guardian.act(
+                f"Here are the Lobster Trap policy check results for {len(policy_results)} configs:\n\n"
+                f"{json.dumps(policy_results, indent=2)}\n\n"
+                "Summarize: which configs pass, which fail, and what adjustments would fix violations?"
+            )
+            self._emit("policy_check", "Policy Guardian", guardian_summary[:500])
+
+            # Phase 5 — Analyst evaluates (1 API call)
+            passing = [r for r in policy_results if r["policies"]["all_passed"]]
             self._emit("phase", "Energy Analyst", "Ranking configs by efficiency")
             evaluation = self.analyst.act(
-                f"Proposals:\n{proposals}\n\nPolicy results:\n{policy_result}\n\n"
-                "Project energy for passing configs. Rank by J/token. "
-                "What is the best config and how much does it save vs baseline (0.355 J/tok)?"
+                f"Here are the projected configs that passed Lobster Trap:\n\n"
+                f"{json.dumps(passing, indent=2)}\n\n"
+                f"Comparison: {json.dumps(comparison, indent=2)}\n\n"
+                f"Baseline J/token: 0.355. Rank by efficiency, explain tradeoffs, "
+                "and output the best config as a JSON block."
             )
             self._emit("evaluation", "Energy Analyst", evaluation[:500])
 
-            # Extract recommendation
             for m in re.finditer(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", evaluation):
                 try:
                     parsed = json.loads(m.group(1))
-                    if "config" in parsed or "batch_size" in parsed or "projection" in parsed:
+                    if "batch_size" in parsed or "config" in parsed or "projection" in parsed:
                         best_result = parsed
                         break
                 except (json.JSONDecodeError, KeyError):
@@ -527,7 +637,7 @@ class GreenTuneSwarm:
 
             self._emit("iteration_end", "Orchestrator", f"Iteration {iteration} complete")
 
-        # Final synthesis
+        # Final synthesis (1 API call)
         self._emit("phase", "Energy Analyst", "Producing final recommendation")
         final = self.analyst.act(
             "Based on all iterations, provide your FINAL recommendation.\n"
