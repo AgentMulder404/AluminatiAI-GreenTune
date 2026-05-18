@@ -23,11 +23,13 @@ CO2 emissions. Writes a step-level metrics JSON for the GreenTune dashboard.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+import requests as _requests
 from transformers import TrainerCallback, TrainerControl, TrainerState, TrainingArguments
 
 from rocm_power import PowerSamplerThread
@@ -71,6 +73,9 @@ class EnergyCallback(TrainerCallback):
         energy_price_usd_kwh: float = DEFAULT_ENERGY_PRICE,
         output_dir: Optional[str] = None,
         tokens_per_sample: Optional[int] = None,
+        api_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        run_name: Optional[str] = None,
     ):
         self.gpu_index = gpu_index
         self.sample_interval_s = sample_interval_s
@@ -78,6 +83,9 @@ class EnergyCallback(TrainerCallback):
         self.energy_price = energy_price_usd_kwh
         self.output_dir = output_dir
         self.tokens_per_sample = tokens_per_sample
+        self.api_url = api_url
+        self.api_key = api_key
+        self.run_name = run_name
 
         self._sampler: Optional[PowerSamplerThread] = None
         self._step_metrics: list[dict] = []
@@ -85,6 +93,46 @@ class EnergyCallback(TrainerCallback):
         self._step_start_joules: float = 0.0
         self._total_tokens: int = 0
         self._training_start: float = 0.0
+        self._run_id: Optional[str] = None
+        self._last_power_upload_idx: int = 0
+
+    def _api_post(self, payload: dict):
+        """Fire-and-forget POST to the dashboard ingest API."""
+        if not self.api_url or not self.api_key:
+            return
+        def _send():
+            try:
+                _requests.post(
+                    f"{self.api_url}/api/admin/fine-tuning/ingest",
+                    json=payload,
+                    headers={"X-API-Key": self.api_key},
+                    timeout=5,
+                )
+            except Exception:
+                pass
+        threading.Thread(target=_send, daemon=True).start()
+
+    def _upload_power_samples(self):
+        """Upload any new power samples since the last upload."""
+        if not self._sampler or not self._run_id:
+            return
+        samples = self._sampler.accumulator.samples
+        new_samples = samples[self._last_power_upload_idx:]
+        if not new_samples:
+            return
+        self._last_power_upload_idx = len(samples)
+        self._api_post({
+            "action": "power_samples",
+            "run_id": self._run_id,
+            "samples": [
+                {
+                    "t": round(s.timestamp - self._training_start, 3),
+                    "w": round(s.power_w, 1),
+                    "c": round(s.temperature_c, 1),
+                }
+                for s in new_samples
+            ],
+        })
 
     def on_train_begin(
         self,
@@ -105,11 +153,41 @@ class EnergyCallback(TrainerCallback):
         if self.output_dir:
             Path(self.output_dir).mkdir(parents=True, exist_ok=True)
 
+        # Register run with dashboard API
+        if self.api_url and self.api_key:
+            try:
+                resp = _requests.post(
+                    f"{self.api_url}/api/admin/fine-tuning/ingest",
+                    json={
+                        "action": "run_start",
+                        "name": self.run_name or "GreenTune Run",
+                        "model": getattr(args, '_name_or_path', None),
+                        "epochs": args.num_train_epochs,
+                        "batch_size": args.per_device_train_batch_size,
+                        "grad_accum": args.gradient_accumulation_steps,
+                        "effective_batch_size": (
+                            args.per_device_train_batch_size
+                            * args.gradient_accumulation_steps
+                        ),
+                        "learning_rate": args.learning_rate,
+                        "max_seq_length": getattr(args, 'max_seq_length', None),
+                    },
+                    headers={"X-API-Key": self.api_key},
+                    timeout=10,
+                )
+                data = resp.json()
+                self._run_id = data.get("run_id")
+                print(f"  Dashboard: registered run {self._run_id}")
+            except Exception as e:
+                print(f"  Dashboard: failed to register run — {e}")
+
         print(f"\n{'='*60}")
         print(f"  GreenTune Energy Monitor — GPU {self.gpu_index}")
         print(f"  Sampling power every {self.sample_interval_s}s")
         print(f"  Carbon intensity: {self.carbon_intensity} gCO2/kWh")
         print(f"  Energy price: ${self.energy_price}/kWh")
+        if self._run_id:
+            print(f"  Live dashboard: {self.api_url}/admin/fine-tuning")
         print(f"{'='*60}\n")
 
     def on_step_begin(
@@ -173,6 +251,11 @@ class EnergyCallback(TrainerCallback):
         )
 
         self._step_metrics.append(step_data.__dict__)
+
+        # Upload step to dashboard
+        if self._run_id:
+            self._api_post({"action": "step", "run_id": self._run_id, **step_data.__dict__})
+            self._upload_power_samples()
 
         # Live log line
         print(
@@ -256,6 +339,16 @@ class EnergyCallback(TrainerCallback):
                     ],
                     f,
                 )
+
+        # Upload final power samples and run completion
+        if self._run_id:
+            self._upload_power_samples()
+            self._api_post({
+                "action": "run_complete",
+                "run_id": self._run_id,
+                **summary,
+                "train_loss": state.log_history[-1].get("train_loss", 0) if state.log_history else 0,
+            })
 
         # Print summary
         print(f"\n{'='*60}")

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   ResponsiveContainer,
   LineChart,
@@ -14,11 +14,14 @@ import {
   BarChart,
   Bar,
   Legend,
+  ReferenceLine,
+  ReferenceArea,
+  ComposedChart,
 } from "recharts";
 
 // ── Types ──
 
-type TabId = "monitor" | "leaderboard" | "playground" | "roi";
+type TabId = "overview" | "monitor" | "leaderboard" | "playground" | "roi";
 
 interface EnergySummary {
   training_duration_s: number;
@@ -103,9 +106,10 @@ interface TrainingRun {
 // ── Constants ──
 
 const TABS: { id: TabId; label: string }[] = [
+  { id: "overview", label: "Overview" },
   { id: "monitor", label: "Run Monitor" },
-  { id: "leaderboard", label: "Efficiency Leaderboard" },
-  { id: "playground", label: "Model Playground" },
+  { id: "leaderboard", label: "Leaderboard" },
+  { id: "playground", label: "Playground" },
   { id: "roi", label: "ROI Calculator" },
 ];
 
@@ -331,6 +335,158 @@ function useFineTuneApi() {
   return { loading, error, callApi };
 }
 
+interface LiveStep {
+  run_id: string;
+  step: number;
+  loss: number;
+  learning_rate: number;
+  tokens_processed: number;
+  step_time_s: number;
+  avg_power_w: number;
+  peak_power_w: number;
+  step_joules: number;
+  joules_per_token: number;
+  cumulative_joules: number;
+  cumulative_kwh: number;
+  cumulative_cost_usd: number;
+  cumulative_co2_grams: number;
+  temperature_c: number;
+  tokens_per_second: number;
+}
+
+interface LivePower {
+  run_id: string;
+  t: number;
+  w: number;
+  c: number | null;
+}
+
+interface LiveRunState {
+  run_id: string;
+  name: string;
+  status: "running" | "completed";
+  steps: LiveStep[];
+  power: LivePower[];
+}
+
+function useLiveStream() {
+  const [connected, setConnected] = useState(false);
+  const [liveRuns, setLiveRuns] = useState<Map<string, LiveRunState>>(new Map());
+
+  useEffect(() => {
+    const es = new EventSource("/api/admin/fine-tuning/stream?run_id=*");
+
+    es.onopen = () => setConnected(true);
+    es.onerror = () => setConnected(false);
+
+    es.onmessage = (e) => {
+      try {
+        const event = JSON.parse(e.data);
+        if (event.type === "connected") return;
+
+        setLiveRuns((prev) => {
+          const next = new Map(prev);
+          const runId = event.run_id;
+
+          if (event.type === "run_start") {
+            next.set(runId, {
+              run_id: runId,
+              name: event.data?.name || "Live Run",
+              status: "running",
+              steps: [],
+              power: [],
+            });
+          } else if (event.type === "step") {
+            const run = next.get(runId);
+            if (run) {
+              run.steps = [...run.steps, event.data as LiveStep];
+            }
+          } else if (event.type === "power") {
+            const run = next.get(runId);
+            if (run) {
+              run.power = [...run.power, event.data as LivePower];
+            }
+          } else if (event.type === "run_complete") {
+            const run = next.get(runId);
+            if (run) {
+              run.status = "completed";
+            }
+          }
+
+          return next;
+        });
+      } catch {
+        // ignore parse errors
+      }
+    };
+
+    return () => es.close();
+  }, []);
+
+  const liveTrainingRuns: TrainingRun[] = useMemo(() => {
+    return Array.from(liveRuns.values()).map((lr) => ({
+      id: `live-${lr.run_id}`,
+      name: `${lr.name}${lr.status === "running" ? " (Live)" : ""}`,
+      metrics: lr.steps.length > 0
+        ? {
+            summary: {
+              training_duration_s: lr.steps.reduce((a, s) => a + s.step_time_s, 0),
+              total_steps: lr.steps[lr.steps.length - 1]?.step || 0,
+              total_tokens: lr.steps[lr.steps.length - 1]?.tokens_processed || 0,
+              total_joules: lr.steps[lr.steps.length - 1]?.cumulative_joules || 0,
+              total_kwh: lr.steps[lr.steps.length - 1]?.cumulative_kwh || 0,
+              avg_power_w: lr.steps.reduce((a, s) => a + s.avg_power_w, 0) / lr.steps.length,
+              peak_power_w: Math.max(...lr.steps.map((s) => s.peak_power_w)),
+              total_cost_usd: lr.steps[lr.steps.length - 1]?.cumulative_cost_usd || 0,
+              total_co2_grams: lr.steps[lr.steps.length - 1]?.cumulative_co2_grams || 0,
+              avg_joules_per_token:
+                lr.steps.reduce((a, s) => a + s.joules_per_token, 0) / lr.steps.length,
+              avg_tokens_per_second:
+                lr.steps.reduce((a, s) => a + s.tokens_per_second, 0) / lr.steps.length,
+              power_samples: lr.power.length,
+            },
+            steps: lr.steps.map((s) => ({
+              step: s.step,
+              timestamp: 0,
+              loss: s.loss,
+              learning_rate: s.learning_rate,
+              tokens_processed: s.tokens_processed,
+              step_time_s: s.step_time_s,
+              avg_power_w: s.avg_power_w,
+              peak_power_w: s.peak_power_w,
+              step_joules: s.step_joules,
+              joules_per_token: s.joules_per_token,
+              cumulative_joules: s.cumulative_joules,
+              cumulative_kwh: s.cumulative_kwh,
+              cumulative_cost_usd: s.cumulative_cost_usd,
+              cumulative_co2_grams: s.cumulative_co2_grams,
+              temperature_c: s.temperature_c,
+              tokens_per_second: s.tokens_per_second,
+            })),
+          }
+        : null,
+      power: lr.power.map((p) => ({ t: p.t, w: p.w, c: p.c ?? 0 })),
+      config: null,
+      evals: [],
+    }));
+  }, [liveRuns]);
+
+  return { connected, liveRuns: liveTrainingRuns };
+}
+
+function LiveIndicator({ connected }: { connected: boolean }) {
+  if (!connected) return null;
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5 bg-red-500/10 border border-red-500/30 rounded-lg text-xs">
+      <span className="relative flex h-2.5 w-2.5">
+        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500" />
+      </span>
+      <span className="text-red-400 font-medium">Live</span>
+    </div>
+  );
+}
+
 // ── Helpers ──
 
 function fmt(n: number, decimals = 2): string {
@@ -349,6 +505,48 @@ function fmtDuration(seconds: number): string {
 
 function uid(): string {
   return Math.random().toString(36).slice(2, 10);
+}
+
+// ── Tab-to-Autofill ──
+
+function useTabFill(
+  value: string,
+  setValue: (v: string) => void,
+  suggestions: string[]
+) {
+  const idxRef = useRef(0);
+
+  const onKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement | HTMLInputElement>) => {
+      if (e.key !== "Tab" || value.trim().length > 0) return;
+      e.preventDefault();
+      setValue(suggestions[idxRef.current % suggestions.length]);
+      idxRef.current += 1;
+    },
+    [value, setValue, suggestions]
+  );
+
+  return { onKeyDown };
+}
+
+function TabHint({ visible }: { visible: boolean }) {
+  if (!visible) return null;
+  return (
+    <span className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-neutral-600 text-xs flex items-center gap-1">
+      <kbd className="px-1.5 py-0.5 bg-neutral-800 border border-neutral-700 rounded text-[10px] font-mono">Tab</kbd>
+      to autofill
+    </span>
+  );
+}
+
+function TabHintMultiline({ visible }: { visible: boolean }) {
+  if (!visible) return null;
+  return (
+    <span className="absolute right-3 bottom-3 pointer-events-none text-neutral-600 text-xs flex items-center gap-1">
+      <kbd className="px-1.5 py-0.5 bg-neutral-800 border border-neutral-700 rounded text-[10px] font-mono">Tab</kbd>
+      to autofill
+    </span>
+  );
 }
 
 // ── Stat Card ──
@@ -958,6 +1156,17 @@ function PlaygroundTab({
   const [response, setResponse] = useState("");
   const [showEvals, setShowEvals] = useState(true);
 
+  const playgroundSuggestions = useMemo(() => [
+    "Why does MI300X draw the same power regardless of batch size?",
+    "How does QLoRA reduce energy consumption vs full fine-tuning?",
+    "What is Joules-per-token and why should I track it?",
+    "Compare the energy efficiency of batch size 2 vs batch size 1 on MI300X",
+    "How much CO2 does a single fine-tuning run produce?",
+    "What ROCm tools can I use to monitor GPU power in real time?",
+  ], []);
+
+  const { onKeyDown: onTabFill } = useTabFill(prompt, setPrompt, playgroundSuggestions);
+
   const allEvals = runs.flatMap((r) =>
     r.evals.map((e) => ({ ...e, runName: r.name }))
   );
@@ -980,12 +1189,16 @@ function PlaygroundTab({
         <h3 className="text-sm font-medium text-white mb-3">
           Test a Prompt
         </h3>
-        <textarea
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Ask about GPU power management, energy efficiency, ROCm operations, cost attribution..."
-          className={`${INPUT_CLS} h-24 resize-none`}
-        />
+        <div className="relative">
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            onKeyDown={onTabFill}
+            placeholder="Ask about GPU power management, energy efficiency, ROCm operations, cost attribution..."
+            className={`${INPUT_CLS} h-24 resize-none`}
+          />
+          <TabHintMultiline visible={!prompt} />
+        </div>
         <div className="flex justify-between items-center mt-3">
           <span className="text-neutral-500 text-xs">
             Sends to Claude with fine-tuned domain context
@@ -1286,6 +1499,338 @@ function ROICalculatorTab() {
   );
 }
 
+// ── Tab 0: Overview (Hero + Power Overlay + Cumulative Divergence) ──
+
+function OverviewTab({ runs }: { runs: TrainingRun[] }) {
+  const baseline = runs.find((r) => r.id === "baseline-bs2");
+  const smallBatch = runs.find((r) => r.id === "optimized-bs1");
+  const bSummary = baseline?.metrics?.summary;
+  const sSummary = smallBatch?.metrics?.summary;
+
+  const energyDelta =
+    bSummary && sSummary
+      ? Math.round(((sSummary.total_joules - bSummary.total_joules) / bSummary.total_joules) * 100)
+      : 30;
+  const jouleSaved =
+    bSummary && sSummary
+      ? Math.round(sSummary.total_joules - bSummary.total_joules)
+      : 26534;
+
+  // Build power overlay data — merge both runs' power samples by time
+  const powerOverlay = useMemo(() => {
+    const bPower = baseline?.power || [];
+    const sPower = smallBatch?.power || [];
+    const maxT = Math.max(
+      bPower.length ? bPower[bPower.length - 1].t : 0,
+      sPower.length ? sPower[sPower.length - 1].t : 0
+    );
+    const bMap = new Map(bPower.map((p) => [p.t, p.w]));
+    const sMap = new Map(sPower.map((p) => [p.t, p.w]));
+    const data: { t: number; baseline: number | null; smallBatch: number | null }[] = [];
+    for (let t = 0; t <= maxT; t += 2) {
+      data.push({
+        t,
+        baseline: bMap.get(t) ?? null,
+        smallBatch: sMap.get(t) ?? null,
+      });
+    }
+    return data;
+  }, [baseline, smallBatch]);
+
+  // Build cumulative energy divergence from step data
+  const cumulativeData = useMemo(() => {
+    const bSteps = baseline?.metrics?.steps || [];
+    const sSteps = smallBatch?.metrics?.steps || [];
+    const maxLen = Math.max(bSteps.length, sSteps.length);
+    const data: { step: number; baseline: number; smallBatch: number; waste: number }[] = [];
+    for (let i = 0; i < maxLen; i++) {
+      const bJ = bSteps[i]?.cumulative_joules ?? (i > 0 ? data[i - 1]?.baseline ?? 0 : 0);
+      const sJ = sSteps[i]?.cumulative_joules ?? (i > 0 ? data[i - 1]?.smallBatch ?? 0 : 0);
+      const step = bSteps[i]?.step ?? sSteps[i]?.step ?? (i + 1) * 10;
+      data.push({ step, baseline: bJ, smallBatch: sJ, waste: Math.max(0, sJ - bJ) });
+    }
+    return data;
+  }, [baseline, smallBatch]);
+
+  // CO2 equivalence calculations
+  const baselineCO2 = bSummary?.total_co2_grams ?? 9.46;
+  const smallBatchCO2 = sSummary?.total_co2_grams ?? 12.33;
+  const wasteCO2 = smallBatchCO2 - baselineCO2;
+
+  return (
+    <div className="space-y-8">
+      {/* Hero Banner */}
+      <div className="relative overflow-hidden rounded-2xl border border-green-500/30 bg-gradient-to-br from-green-950/80 via-neutral-950 to-neutral-950 p-8">
+        <div className="absolute top-0 right-0 w-64 h-64 bg-green-500/5 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2" />
+        <div className="relative">
+          <div className="flex items-center gap-3 mb-3">
+            <span className="px-3 py-1 bg-green-500/20 text-green-400 text-xs font-bold rounded-full uppercase tracking-wider">
+              Key Finding
+            </span>
+            <span className="px-3 py-1 bg-red-500/20 text-red-400 text-xs font-medium rounded-full">
+              AMD MI300X
+            </span>
+          </div>
+          <h2 className="text-4xl font-black text-white mb-2">
+            {energyDelta}% More Energy Wasted
+          </h2>
+          <p className="text-lg text-neutral-300 mb-6 max-w-2xl">
+            Smaller batch sizes do <span className="text-red-400 font-semibold">not</span> reduce power draw on MI300X.
+            The GPU saturates at ~750W regardless — smaller batches just take longer,
+            burning <span className="text-red-400 font-bold">{jouleSaved.toLocaleString()} extra Joules</span> for the same result.
+          </p>
+
+          {/* Key metrics row */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="bg-neutral-900/80 rounded-xl p-4 border border-neutral-800">
+              <div className="text-neutral-500 text-xs mb-1">Baseline (bs=2)</div>
+              <div className="text-2xl font-bold text-green-400">{bSummary ? fmt(bSummary.total_joules, 0) : "87,300"}</div>
+              <div className="text-neutral-500 text-xs">Joules total</div>
+            </div>
+            <div className="bg-neutral-900/80 rounded-xl p-4 border border-red-900/50">
+              <div className="text-neutral-500 text-xs mb-1">Small Batch (bs=1)</div>
+              <div className="text-2xl font-bold text-red-400">{sSummary ? fmt(sSummary.total_joules, 0) : "113,834"}</div>
+              <div className="text-neutral-500 text-xs">Joules total</div>
+            </div>
+            <div className="bg-neutral-900/80 rounded-xl p-4 border border-neutral-800">
+              <div className="text-neutral-500 text-xs mb-1">J/Token (Baseline)</div>
+              <div className="text-2xl font-bold text-green-400">{bSummary ? fmt(bSummary.avg_joules_per_token, 3) : "0.355"}</div>
+              <div className="text-neutral-500 text-xs">Joules per token</div>
+            </div>
+            <div className="bg-neutral-900/80 rounded-xl p-4 border border-red-900/50">
+              <div className="text-neutral-500 text-xs mb-1">J/Token (Small)</div>
+              <div className="text-2xl font-bold text-red-400">{sSummary ? fmt(sSummary.avg_joules_per_token, 3) : "0.463"}</div>
+              <div className="text-neutral-500 text-xs">Joules per token</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Power Overlay Chart — the money shot */}
+      <div className={CARD_CLS}>
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-sm font-medium text-white">
+            GPU Power Draw — Both Runs Overlaid
+          </h3>
+          <span className="text-xs text-neutral-500">AMD MI300X · 750W TDP</span>
+        </div>
+        <p className="text-xs text-neutral-500 mb-4">
+          Same power draw (~750W peak) but the small-batch run runs 40s longer.
+          <span className="text-red-400 font-medium ml-1">The red zone is wasted energy.</span>
+        </p>
+        <ResponsiveContainer width="100%" height={320}>
+          <ComposedChart data={powerOverlay}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#262626" />
+            <XAxis
+              dataKey="t"
+              stroke="#525252"
+              fontSize={11}
+              tickFormatter={(v: number) => `${v}s`}
+            />
+            <YAxis
+              stroke="#525252"
+              fontSize={11}
+              domain={[0, 800]}
+              tickFormatter={(v: number) => `${v}W`}
+            />
+            <ReferenceLine y={750} stroke="#dc2626" strokeDasharray="6 3" strokeWidth={1} label={{ value: "750W TDP", position: "right", fill: "#dc2626", fontSize: 10 }} />
+            {/* Waste zone — area where small batch is still running but baseline is done */}
+            {bSummary && sSummary && (
+              <ReferenceArea
+                x1={Math.round(bSummary.training_duration_s + 20)}
+                x2={Math.round(sSummary.training_duration_s + 20)}
+                fill="#dc2626"
+                fillOpacity={0.08}
+                label={{ value: "Wasted Energy", fill: "#dc2626", fontSize: 11, position: "insideTop" }}
+              />
+            )}
+            <Tooltip
+              {...CHART_TOOLTIP_STYLE}
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              formatter={(value: any, name: any) => [
+                value !== null ? `${fmt(Number(value), 0)}W` : "—",
+                name === "baseline" ? "Baseline (bs=2)" : "Small Batch (bs=1)",
+              ]}
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              labelFormatter={(v: any) => `${fmt(Number(v), 0)}s`}
+            />
+            <Area
+              type="monotone"
+              dataKey="baseline"
+              name="baseline"
+              stroke="#22c55e"
+              fill="#22c55e"
+              fillOpacity={0.08}
+              strokeWidth={2}
+              dot={false}
+              connectNulls={false}
+            />
+            <Area
+              type="monotone"
+              dataKey="smallBatch"
+              name="smallBatch"
+              stroke="#f97316"
+              fill="#f97316"
+              fillOpacity={0.05}
+              strokeWidth={2}
+              dot={false}
+              connectNulls={false}
+            />
+            <Legend
+              formatter={(value: string) =>
+                value === "baseline" ? "Baseline (bs=2, ga=4)" : "Small Batch (bs=1, ga=8)"
+              }
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Cumulative Energy Divergence */}
+      {cumulativeData.length > 0 && (
+        <div className={CARD_CLS}>
+          <h3 className="text-sm font-medium text-white mb-1">
+            Cumulative Energy — Where the Waste Happens
+          </h3>
+          <p className="text-xs text-neutral-500 mb-4">
+            Both runs process the same 245K tokens. The gap between the curves is pure waste.
+          </p>
+          <ResponsiveContainer width="100%" height={280}>
+            <AreaChart data={cumulativeData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#262626" />
+              <XAxis
+                dataKey="step"
+                stroke="#525252"
+                fontSize={11}
+                tickFormatter={(v: number) => `Step ${v}`}
+              />
+              <YAxis
+                stroke="#525252"
+                fontSize={11}
+                tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}kJ`}
+              />
+              <Tooltip
+                {...CHART_TOOLTIP_STYLE}
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                formatter={(value: any, name: any) => [
+                  `${fmt(Number(value), 0)} J`,
+                  name === "baseline" ? "Baseline" : name === "smallBatch" ? "Small Batch" : "Energy Waste",
+                ]}
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                labelFormatter={(v: any) => `Step ${v}`}
+              />
+              <Area
+                type="monotone"
+                dataKey="smallBatch"
+                name="smallBatch"
+                stroke="#f97316"
+                fill="#f97316"
+                fillOpacity={0.12}
+                strokeWidth={2}
+                dot={false}
+              />
+              <Area
+                type="monotone"
+                dataKey="baseline"
+                name="baseline"
+                stroke="#22c55e"
+                fill="#22c55e"
+                fillOpacity={0.15}
+                strokeWidth={2}
+                dot={false}
+              />
+              <Legend
+                formatter={(value: string) =>
+                  value === "baseline" ? "Baseline (bs=2)" : value === "smallBatch" ? "Small Batch (bs=1)" : "Waste"
+                }
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* Bottom row: Hardware Badge + CO2 Equivalence + Fleet Projection */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {/* Hardware Badge */}
+        <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-5">
+          <div className="flex items-center gap-2 mb-3">
+            <div className="w-8 h-8 bg-red-600 rounded-lg flex items-center justify-center text-white text-xs font-black">
+              AMD
+            </div>
+            <div>
+              <div className="text-white text-sm font-bold">Instinct MI300X</div>
+              <div className="text-neutral-500 text-xs">CDNA3 Architecture</div>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div>
+              <span className="text-neutral-500">VRAM</span>
+              <div className="text-white font-medium">192 GB HBM3</div>
+            </div>
+            <div>
+              <span className="text-neutral-500">TDP</span>
+              <div className="text-white font-medium">750W</div>
+            </div>
+            <div>
+              <span className="text-neutral-500">ROCm</span>
+              <div className="text-white font-medium">7.0</div>
+            </div>
+            <div>
+              <span className="text-neutral-500">Arch</span>
+              <div className="text-white font-medium">gfx942</div>
+            </div>
+          </div>
+        </div>
+
+        {/* CO2 Equivalence */}
+        <div className="bg-neutral-900 border border-emerald-900/50 rounded-xl p-5">
+          <div className="text-emerald-400 text-xs font-bold uppercase tracking-wider mb-3">
+            Carbon Impact
+          </div>
+          <div className="space-y-3">
+            <div>
+              <div className="text-neutral-500 text-xs">Baseline run</div>
+              <div className="text-white text-lg font-bold">{fmt(baselineCO2, 1)}g CO2</div>
+              <div className="text-neutral-500 text-xs">{fmt(baselineCO2 / 8.0, 1)} smartphone charges</div>
+            </div>
+            <div className="border-t border-neutral-800 pt-2">
+              <div className="text-neutral-500 text-xs">Energy waste per run</div>
+              <div className="text-red-400 text-lg font-bold">+{fmt(wasteCO2, 1)}g CO2</div>
+              <div className="text-neutral-500 text-xs">{fmt(wasteCO2 / 404, 4)} car-miles equivalent</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Fleet Projection */}
+        <div className="bg-neutral-900 border border-blue-900/50 rounded-xl p-5">
+          <div className="text-blue-400 text-xs font-bold uppercase tracking-wider mb-3">
+            At Scale (1K runs/month)
+          </div>
+          <div className="space-y-3">
+            <div>
+              <div className="text-neutral-500 text-xs">Energy saved</div>
+              <div className="text-green-400 text-lg font-bold">{fmt(jouleSaved / 1000 * 1000 / 3600, 1)} kWh/mo</div>
+              <div className="text-neutral-500 text-xs">{fmt(jouleSaved, 0)} J x 1,000 runs</div>
+            </div>
+            <div className="border-t border-neutral-800 pt-2">
+              <div className="text-neutral-500 text-xs">CO2 avoided</div>
+              <div className="text-green-400 text-lg font-bold">{fmt(wasteCO2 * 1000 / 1000, 1)} kg CO2/mo</div>
+              <div className="text-neutral-500 text-xs">{fmt(wasteCO2 * 1000 / 404, 0)} car-miles avoided</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Methodology note */}
+      <div className="bg-neutral-900/50 border border-neutral-800 rounded-xl p-4 text-xs text-neutral-500">
+        <span className="text-neutral-400 font-medium">Methodology:</span> Power sampled via{" "}
+        <code className="text-green-400/80">amdsmi.amdsmi_get_power_info()</code> every 0.5s.
+        Energy calculated using trapezoidal integration. CO2 factor: 390 gCO2/kWh (US average).
+        Both runs: Qwen2.5-7B, QLoRA NF4, LoRA r=16, 500 Hermes traces, effective batch size 8.
+      </div>
+    </div>
+  );
+}
+
 // ── Import Panel ──
 
 function ImportPanel({
@@ -1301,6 +1846,14 @@ function ImportPanel({
     "energy_metrics" | "run_config" | "power_samples" | "eval_results"
   >("energy_metrics");
   const [error, setError] = useState("");
+
+  const nameSuggestions = useMemo(() => [
+    "Hermes-only (bs=2)",
+    "Blended v1",
+    "LoRA r=8 test",
+    "Large batch (bs=4)",
+  ], []);
+  const { onKeyDown: onNameTab } = useTabFill(importName, setImportName, nameSuggestions);
   const [pendingRun, setPendingRun] = useState<Partial<TrainingRun>>({
     id: uid(),
     name: "",
@@ -1369,13 +1922,17 @@ function ImportPanel({
         Import Training Run
       </h3>
       <div className="space-y-3">
-        <input
-          type="text"
-          value={importName}
-          onChange={(e) => setImportName(e.target.value)}
-          placeholder="Run name (e.g. 'Hermes-only' or 'Blended v1')"
-          className={INPUT_CLS}
-        />
+        <div className="relative">
+          <input
+            type="text"
+            value={importName}
+            onChange={(e) => setImportName(e.target.value)}
+            onKeyDown={onNameTab}
+            placeholder="Run name (e.g. 'Hermes-only' or 'Blended v1')"
+            className={INPUT_CLS}
+          />
+          <TabHint visible={!importName} />
+        </div>
         <div className="flex gap-2 flex-wrap">
           {fileTypes.map((ft) => (
             <button
@@ -1425,12 +1982,20 @@ function ImportPanel({
 // ── Main Page ──
 
 export default function FineTuningPage() {
-  const [tab, setTab] = useState<TabId>("monitor");
+  const [tab, setTab] = useState<TabId>("overview");
   const { data: storedRuns, save: saveRuns } = useStoredData<TrainingRun[]>(
     STORAGE_KEY,
     DEFAULT_RUNS
   );
   const { loading, error, callApi } = useFineTuneApi();
+  const { connected, liveRuns } = useLiveStream();
+
+  // Merge stored + live runs (live runs appear at the top)
+  const allRuns = useMemo(() => {
+    const liveIds = new Set(liveRuns.map((r) => r.id));
+    const filtered = storedRuns.filter((r) => !liveIds.has(r.id));
+    return [...liveRuns, ...filtered];
+  }, [storedRuns, liveRuns]);
 
   const handleImport = useCallback(
     (run: TrainingRun) => {
@@ -1450,9 +2015,12 @@ export default function FineTuningPage() {
   return (
     <div className="bg-neutral-950 text-neutral-100 p-6 min-h-screen">
       <div className="max-w-6xl mx-auto">
-        <h1 className="text-2xl font-bold text-white mb-1">
-          GreenTune Fine-Tuning
-        </h1>
+        <div className="flex items-center justify-between mb-1">
+          <h1 className="text-2xl font-bold text-white">
+            GreenTune Fine-Tuning
+          </h1>
+          <LiveIndicator connected={connected} />
+        </div>
         <p className="text-neutral-400 text-sm mb-6">
           Energy-efficient QLoRA fine-tuning on AMD MI300X with real-time power
           monitoring
@@ -1476,11 +2044,12 @@ export default function FineTuningPage() {
         </div>
 
         {/* Tab Content */}
-        {tab === "monitor" && <RunMonitorTab runs={storedRuns} />}
-        {tab === "leaderboard" && <LeaderboardTab runs={storedRuns} />}
+        {tab === "overview" && <OverviewTab runs={allRuns} />}
+        {tab === "monitor" && <RunMonitorTab runs={allRuns} />}
+        {tab === "leaderboard" && <LeaderboardTab runs={allRuns} />}
         {tab === "playground" && (
           <PlaygroundTab
-            runs={storedRuns}
+            runs={allRuns}
             loading={loading}
             error={error}
             callApi={callApi}
@@ -1492,20 +2061,28 @@ export default function FineTuningPage() {
         <ImportPanel runs={storedRuns} onImport={handleImport} />
 
         {/* Run Management */}
-        {storedRuns.length > 0 && (
+        {allRuns.length > 0 && (
           <div className="mt-4 flex gap-2 flex-wrap">
-            {storedRuns.map((r) => (
+            {allRuns.map((r) => (
               <div
                 key={r.id}
-                className="flex items-center gap-2 bg-neutral-800 rounded-lg px-3 py-1.5 text-xs"
+                className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs ${
+                  r.id.startsWith("live-")
+                    ? "bg-red-500/10 border border-red-500/30"
+                    : "bg-neutral-800"
+                }`}
               >
-                <span className="text-neutral-300">{r.name}</span>
-                <button
-                  onClick={() => handleDeleteRun(r.id)}
-                  className="text-neutral-500 hover:text-red-400"
-                >
-                  x
-                </button>
+                <span className={r.id.startsWith("live-") ? "text-red-400" : "text-neutral-300"}>
+                  {r.name}
+                </span>
+                {!r.id.startsWith("live-") && (
+                  <button
+                    onClick={() => handleDeleteRun(r.id)}
+                    className="text-neutral-500 hover:text-red-400"
+                  >
+                    x
+                  </button>
+                )}
               </div>
             ))}
           </div>

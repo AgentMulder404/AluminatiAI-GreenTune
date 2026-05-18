@@ -1,8 +1,8 @@
-# AluminatiAI GreenTune
+# AluminatiAI GreenTune Agent
 
-**Energy-aware fine-tuning on AMD MI300X. Measures Joules-per-token as a first-class training metric.**
+**Autonomous Energy Intelligence for LLM Fine-Tuning — powered by Gemini on AMD MI300X.**
 
-> AMD Developer Hackathon 2026 — Fine-Tuning Track  
+> lablab.ai Transforming Enterprise Through AI Hackathon — San Jose 2026  
 > Team: AluminatiAI (Kevin Mello)  
 > Live Dashboard: [aluminatiai.com/admin/fine-tuning](https://www.aluminatiai.com/admin/fine-tuning)
 
@@ -15,30 +15,73 @@ Every organization fine-tuning LLMs today is flying blind on energy. Teams track
 - GPU energy is invisible. MI300X draws 750W at peak but teams never see it.
 - Optimization is guesswork. Without per-token energy metrics, you can't compare configs on efficiency.
 - Carbon compliance is coming. EU AI Act and SEC climate disclosures will require energy reporting for AI workloads.
+- No governance layer. There's no way to enforce energy budgets or reject wasteful jobs before they run.
 
 ## The Solution
+
+GreenTune Agent is an **autonomous AI agent powered by Gemini** that turns energy measurement into energy optimization.
+
+Instead of manually tuning hyperparameters, engineers talk to the agent:
+
+```
+greentune> Optimize Qwen-7B for lowest J/token under 50g CO2
+
+  Based on historical data, I recommend:
+  - batch_size=2, grad_accum=4 (effective=8)
+  - LoRA rank 16, lr=2e-4
+  - This achieves 0.355 J/token vs 0.463 J/token with bs=1
+
+  Energy Projection:
+    Duration: 138s | Energy: 87,300 J | CO2: 9.46g | Cost: $0.0024
+    All policies passed. ✓
+
+  Launch training? [y/N]
+```
+
+The agent analyzes historical energy data, recommends optimal configs, enforces **energy governance policies**, and monitors training in real-time — all autonomously.
 
 GreenTune treats **Joules-per-token** as a first-class metric alongside loss and throughput.
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│  AluminatiAI Platform (Next.js + Supabase)           │
+│  GreenTune Agent (Gemini 2.5)                        │
 │  ┌────────────────────────────────────────────────┐  │
+│  │  greentune_agent.py                            │  │
+│  │  • Natural language → training config          │  │
+│  │  • Historical energy analysis                  │  │
+│  │  • Energy projection + policy enforcement      │  │
+│  │  • Autonomous training launch + monitoring     │  │
+│  └────────────────────────┬───────────────────────┘  │
+│                           │ recommend / launch        │
+│  ┌────────────────────────┴───────────────────────┐  │
+│  │  Lobster Trap — Energy Governance              │  │
+│  │  • Carbon budget (max 50g CO2)                 │  │
+│  │  • Energy cap (max 1 kWh)                      │  │
+│  │  • Efficiency floor (max J/token)              │  │
+│  │  • Cost guard (max $/run)                      │  │
+│  └────────────────────────┬───────────────────────┘  │
+└───────────────────────────┼──────────────────────────┘
+                            │ approved config
+┌───────────────────────────┼──────────────────────────┐
+│  Dashboard (Next.js + Supabase + SSE)                │
+│  ┌────────────────────────┴───────────────────────┐  │
 │  │  GreenTune Dashboard (/admin/fine-tuning)      │  │
-│  │  • Run Monitor — power curves, loss charts     │  │
+│  │  • Overview — hero finding + power overlay     │  │
+│  │  • Run Monitor — live power curves, loss       │  │
 │  │  • Leaderboard — side-by-side run comparison   │  │
 │  │  • ROI Calculator — cost projections           │  │
 │  │  • Playground — model evaluation               │  │
-│  └────────────────────────────────────────────────┘  │
-└──────────────────────┬───────────────────────────────┘
-                       │ metrics JSON
-┌──────────────────────┴───────────────────────────────┐
+│  └────────────────────────┬───────────────────────┘  │
+└───────────────────────────┼──────────────────────────┘
+                            │ real-time SSE stream
+┌───────────────────────────┼──────────────────────────┐
 │  GreenTune Training Pipeline (Python / ROCm)         │
-│  ┌──────────────┐  ┌──────────────────────────────┐  │
+│  ┌──────────────┐  ┌─────┴────────────────────────┐  │
 │  │ greentune.py │  │ energy_callback.py           │  │
 │  │ QLoRA + SFT  │──│ PowerSamplerThread           │  │
 │  │ Qwen2.5-7B   │  │ EnergyAccumulator            │  │
 │  └──────────────┘  │ J/token per step             │  │
+│                     │ Live upload to dashboard API │  │
 │                     └──────────┬───────────────────┘  │
 │  ┌──────────────────────────┐  │                     │
 │  │ amd_collector.py         │  │ amdsmi / rocm-smi   │
@@ -50,6 +93,45 @@ GreenTune treats **Joules-per-token** as a first-class metric alongside loss and
 │              192GB HBM3 · 750W TDP · gfx942          │
 └──────────────────────────────────────────────────────┘
 ```
+
+## GreenTune Agent — Gemini-Powered Autonomy
+
+The agent accepts natural language and autonomously manages the full training lifecycle:
+
+```bash
+# Interactive mode
+python greentune_agent.py --interactive
+
+# One-shot recommendation
+python greentune_agent.py --request "Lowest J/token config for 500 samples"
+
+# Recommend + launch with live dashboard
+python greentune_agent.py \
+  --request "Fine-tune Qwen-7B, keep CO2 under 30g" \
+  --dashboard-url https://www.aluminatiai.com \
+  --dashboard-api-key alum_xxx
+
+# Analyze a completed run
+python greentune_agent.py --analyze output/greentune-run/energy_metrics.json
+
+# Show active energy policies
+python greentune_agent.py --show-policies
+```
+
+The agent uses historical `energy_metrics.json` data to make informed recommendations. Each completed run improves future predictions.
+
+## Energy Governance — Lobster Trap
+
+Enterprise energy policies that run **before** training starts:
+
+| Policy | Description | Default Limit |
+|--------|-------------|---------------|
+| `carbon_budget` | Max CO2 per run | 50g |
+| `energy_cap` | Max energy per run | 1 kWh |
+| `efficiency_floor` | Max J/token allowed | 0.8 J/tok |
+| `cost_guard` | Max energy cost per run | $1.00 |
+
+When a proposed config violates a policy, the agent explains why and suggests a compliant alternative — the job never launches. This is the governance layer enterprises need for EU AI Act and SEC climate disclosure compliance.
 
 ## Key Finding
 
@@ -90,19 +172,46 @@ Built and tested on **AMD Instinct MI300X** via AMD Developer Cloud:
 
 ## Quick Start
 
-### Fine-tuning with energy tracking
+### 1. GreenTune Agent (recommended)
 
 ```bash
 cd agent/finetune
+pip install -r ../requirements.txt google-generativeai
 
-# Install dependencies
-pip install -r ../requirements.txt
+# Set your Gemini API key
+export GOOGLE_API_KEY=your_key_here
+
+# Interactive agent mode
+python greentune_agent.py --interactive
+
+# One-shot: recommend optimal config
+python greentune_agent.py --request "Lowest J/token for 500 samples on MI300X"
+
+# Recommend + auto-launch with live dashboard
+python greentune_agent.py \
+  --request "Fine-tune Qwen-7B under 50g CO2" \
+  --dashboard-url https://www.aluminatiai.com \
+  --dashboard-api-key alum_xxx
+```
+
+### 2. Direct fine-tuning (without agent)
+
+```bash
+cd agent/finetune
 
 # Run energy-aware fine-tuning on AMD
 python greentune.py \
   --hermes-only --hermes-max 500 \
   --epochs 1 --batch-size 2 --grad-accum 4 \
   --logging-steps 10
+
+# With live dashboard upload
+python greentune.py \
+  --hermes-only --hermes-max 500 \
+  --epochs 1 --batch-size 2 --grad-accum 4 \
+  --api-url https://www.aluminatiai.com \
+  --api-key alum_xxx \
+  --run-name "Baseline bs=2"
 
 # Output: output/greentune-run/
 #   energy_metrics.json — summary + per-step energy data
@@ -111,7 +220,7 @@ python greentune.py \
 #   adapter/            — LoRA adapter weights
 ```
 
-### Running the GPU agent standalone
+### 3. GPU agent standalone
 
 ```bash
 cd agent
@@ -123,9 +232,9 @@ python agent.py --interval 2 --dry-run --duration 300
 python agent.py --interval 5
 ```
 
-### Dashboard (Next.js)
+### 4. Dashboard
 
-The fine-tuning dashboard is deployed at [aluminatiai.com/admin/fine-tuning](https://www.aluminatiai.com/admin/fine-tuning). Source is in `dashboard/`.
+The fine-tuning dashboard is deployed at [aluminatiai.com/admin/fine-tuning](https://www.aluminatiai.com/admin/fine-tuning). Features real-time SSE streaming when training is active. Source is in `dashboard/`.
 
 ## Repository Structure
 
@@ -134,8 +243,9 @@ GreenTune/
 ├── README.md                          # This file
 ├── agent/
 │   ├── finetune/
+│   │   ├── greentune_agent.py         # Gemini-powered Energy Intelligence Agent
 │   │   ├── greentune.py               # Main training pipeline (QLoRA + energy)
-│   │   ├── energy_callback.py         # HF Trainer callback — power sampling + J/token
+│   │   ├── energy_callback.py         # HF Trainer callback — power sampling + J/token + live upload
 │   │   ├── rocm_power.py             # AMD power monitor (PowerSamplerThread)
 │   │   ├── dataset_builder.py         # Synthetic GPU domain dataset generator
 │   │   ├── eval_model.py             # Post-training evaluation
@@ -152,8 +262,11 @@ GreenTune/
 │   └── requirements.txt             # Dependencies
 ├── dashboard/
 │   └── app/
-│       ├── admin/fine-tuning/page.tsx  # 4-tab dashboard UI (Recharts)
-│       └── api/admin/fine-tuning/route.ts  # AI-powered run analysis API
+│       ├── admin/fine-tuning/page.tsx  # 5-tab dashboard UI (Overview + Recharts)
+│       └── api/admin/fine-tuning/
+│           ├── route.ts               # AI-powered run analysis API
+│           ├── ingest/route.ts        # Live metrics ingest from training agent
+│           └── stream/route.ts        # SSE real-time stream to dashboard
 └── LICENSE
 ```
 
@@ -201,10 +314,11 @@ Both return identical `GPUMetrics` dataclass instances. The same platform, dashb
 
 ## What's Next
 
+- **Multi-GPU fleet agent** — Agent manages training across multiple MI300X GPUs, routing jobs to the most efficient hardware
 - **Cross-GPU benchmarking** — Same workload on A100, H100, MI300X to build a J/token comparison database
-- **Automated config recommendations** — Use energy data to suggest optimal batch size, LoRA rank, sequence length
 - **Carbon compliance reports** — Audit-ready energy/emissions reports for EU AI Act / SEC disclosures
-- **Fleet-level optimization** — Route workloads to hardware based on J/token efficiency
+- **Custom Lobster Trap policies** — Admin UI for defining and managing energy governance rules
+- **Predictive energy modeling** — Train a model on historical energy data to predict J/token before training starts
 
 ## License
 
@@ -212,4 +326,4 @@ Apache 2.0
 
 ---
 
-*Built with AMD Instinct MI300X on AMD Developer Cloud. All energy measurements are from real training runs, not simulations.*
+*Built with AMD Instinct MI300X on AMD Developer Cloud. Gemini 2.5 for agent reasoning. All energy measurements are from real training runs, not simulations.*

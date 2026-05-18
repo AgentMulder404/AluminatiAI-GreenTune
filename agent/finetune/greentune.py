@@ -115,6 +115,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--carbon-intensity", type=float, default=390.0, help="gCO2/kWh")
     p.add_argument("--energy-price", type=float, default=0.10, help="$/kWh")
 
+    # Live dashboard upload
+    p.add_argument("--api-url", default=None, help="Dashboard base URL for live upload (e.g. https://www.aluminatiai.com)")
+    p.add_argument("--api-key", default=None, help="AluminatiAI API key for live upload")
+    p.add_argument("--run-name", default=None, help="Name for this run on the dashboard")
+
     # Output
     p.add_argument("--output", default=DEFAULT_OUTPUT)
 
@@ -454,6 +459,9 @@ def main():
         carbon_intensity_gco2_kwh=args.carbon_intensity,
         energy_price_usd_kwh=args.energy_price,
         output_dir=args.output,
+        api_url=args.api_url,
+        api_key=args.api_key,
+        run_name=args.run_name or f"GreenTune {args.model.split('/')[-1]} bs={args.batch_size}",
     )
 
     # Trainer
